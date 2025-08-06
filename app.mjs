@@ -35,6 +35,14 @@ const LOG_HEALTH_CHECK         = env('LOG_HEALTH_CHECK', false);
 const app = express();
 app.set('trust proxy', true); // Sets the 'req.ip' to the real client IP when behind a reverse proxy
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  if(LOG_HEALTH_CHECK) {
+    console.debug('http-proxy GET /health');
+  }
+  res.status(200).end('OK');
+});
+
 if(ENABLE_PINO) {
   const logger = pinoHttp({
     autoLogging: ENABLE_PINO_AUTO_LOGGING,
@@ -54,14 +62,6 @@ if(onResponse && PARSE_RESPONSE_BODY) {
   app.use(express.json({ strict: true })); // Parse JSON body
   app.use(express.urlencoded({ extended: true })); // Parse URL-encoded body
 }
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  if(LOG_HEALTH_CHECK) {
-    console.debug('http-proxy GET /health');
-  }
-  res.status(200).end('OK');
-});
 
 app.use('/', createProxyMiddleware({
   target: UPSTREAM,
