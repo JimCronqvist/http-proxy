@@ -30,6 +30,7 @@ services:
 | `ENABLE_PINO`               | Adds Pino logging to Express                                   | `false` | -        |
 | `ENABLE_PINO_AUTO_LOGGING`  | Enables automatic logging of requests and responses            | `true`  | -        |
 | `PARSE_RESPONSE_BODY`       | Enables parsing of response bodies for the onResponse handler  | `false` | -        |
+| `LOG_HEALTH_CHECK`          | Enables logging of health check requests                       | `false` | -        |
 
 The handlers can also have their own environment variables, please refer to the specific handler file for more information.
 
