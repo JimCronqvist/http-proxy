@@ -1,0 +1,13 @@
+services:
+  http-proxy:
+    build: .
+    container_name: http-proxy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./:/app
+    #command: sh -c "yarn install && yarn nodemon --watch . --ext mjs,js,json,lock --exec node --trace-deprecation app.mjs"
+    restart: unless-stopped
+    environment:
+      LOG_REQUEST: false
+      UPSTREAM: "https://www.sweclockers.com"

@@ -1,0 +1,23 @@
+services:
+  http-proxy:
+    image: node:22
+    container_name: http-proxy
+    working_dir: /app
+    user: 1000:1000
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./:/app
+    init: true
+    #command: node --trace-deprecation app.mjs
+    #command: sh -c "yarn install && yarn nodemon --signal SIGTERM --watch . --ext mjs,js,json,lock --exec 'node --trace-deprecation app.mjs'"
+    command: sh -c "yarn install && yarn nodemon --signal SIGTERM --watch . --ext mjs,js,json,lock --exec 'node --import ./tracing.mjs --trace-deprecation app.mjs'"
+    restart: unless-stopped
+    environment:
+      UPSTREAM: https://www.sweclockers.com
+      HANDLER_FILE: log.mjs
+
+      ENABLE_PINO: false
+      ENABLE_PINO_AUTO_LOGGING: true
+
+      LOG_REQUEST: false
