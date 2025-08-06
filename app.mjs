@@ -17,7 +17,7 @@ console.debug('http-proxy using handler file:', handlerFile);
 const { onRequest, onResponse } = await import(handlerFile);
 
 const UPSTREAM = process.env.UPSTREAM || 'http://host.docker.internal:3000';
-const MAX_BUFFER_SIZE = 1 * 1024 * 1024;
+const MAX_BUFFER_SIZE = env('BUFFER_SIZE_MB', 1) * 1024 * 1024;
 const BUFFERABLE_CONTENT_TYPES = [
   'application/json',
   'application/xml',
@@ -31,6 +31,8 @@ const ENABLE_PINO              = env('ENABLE_PINO', false);
 const ENABLE_PINO_AUTO_LOGGING = env('ENABLE_PINO_AUTO_LOGGING', true);
 const PARSE_RESPONSE_BODY      = env('PARSE_RESPONSE_BODY', true);
 const LOG_HEALTH_CHECK         = env('LOG_HEALTH_CHECK', false);
+const PROXY_TIMEOUT            = env('PROXY_TIMEOUT', 0); // upstream timeout, no timeout by default (note: if streaming, clients will slow down the response)
+const CLIENT_TIMEOUT           = env('TIMEOUT', 0); // client timeout, no timeout by default
 
 const app = express();
 app.set('trust proxy', true); // Sets the 'req.ip' to the real client IP when behind a reverse proxy
@@ -66,7 +68,8 @@ if(onResponse && PARSE_RESPONSE_BODY) {
 app.use('/', createProxyMiddleware({
   target: UPSTREAM,
   changeOrigin: true,
-  proxyTimeout: 5000,
+  proxyTimeout: (PROXY_TIMEOUT ? PROXY_TIMEOUT*1000 : undefined), // Use the PROXY_TIMEOUT env variable if set, default: no timeout.
+  timeout: (CLIENT_TIMEOUT ? CLIENT_TIMEOUT*1000 : undefined), // Use the CLIENT_TIMEOUT env variable if set, default: no timeout.
   preserveHeaderKeyCase: true,
   xfwd: true,
   //logger: console,
@@ -133,7 +136,16 @@ app.use('/', createProxyMiddleware({
         copyHeaders(proxyRes, res);
         proxyRes.pipe(res);
       }
-    }
+    },
+
+    error: (err, req, res) => {
+      console.error('Proxy error:', err);
+      if (res.headersSent) {
+        res.end('Internal Server Error');
+      } else {
+        res.status(500).send('Internal Server Error');
+      }
+    },
   },
 }));
 
