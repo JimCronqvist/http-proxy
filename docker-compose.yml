@@ -16,10 +16,15 @@ services:
     environment:
       LOG_LEVEL: debug
       NODE_ENV: development
-      UPSTREAM: https://img-test2.diakrit.com
-      HANDLER_FILE: testNoOnResponse.mjs
-      #HANDLER_FILE: log.mjs
+      UPSTREAM: https://www.sweclockers.com
+
+      #HANDLER_FILE: testNoOnResponse.mjs
+      HANDLER_FILE: log.mjs
 
       ENABLE_PINO_AUTO_LOGGING: false
 
-      LOG_REQUEST: false
+      PARSE_REQUEST_BODY: true
+
+      LOG_REQUEST: true
+      LOG_REQUEST_BODY: true
+      LOG_RESPONSE_BODY: true

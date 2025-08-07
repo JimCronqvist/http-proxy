@@ -1,4 +1,5 @@
 import { env, realClientIP } from '../utils.mjs';
+//import getRawBody from 'raw-body'; // Something to test later, if we want to use it for raw body parsing. Need to handle stream errors then.
 
 // Environment variables
 const LOG_RESPONSE = env('LOG_RESPONSE', true);

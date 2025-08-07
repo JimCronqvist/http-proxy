@@ -6,7 +6,7 @@ import { pipeline } from 'stream';
 import express from 'express';
 import pinoHttp from 'pino-http';
 import pino from 'pino';
-import pretty from 'pino-pretty';
+//import pretty from 'pino-pretty';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { copyHeaders, env } from './utils.mjs';
 const isProduction = env('NODE_ENV', 'production') === 'production';
@@ -46,7 +46,7 @@ const BUFFERABLE_CONTENT_TYPES = [
 ];
 
 const ENABLE_PINO_AUTO_LOGGING = env('ENABLE_PINO_AUTO_LOGGING', false);
-const PARSE_RESPONSE_BODY      = env('PARSE_RESPONSE_BODY', true);
+const PARSE_REQUEST_BODY       = env('PARSE_REQUEST_BODY', false); // If true, the request body will be parsed and available in req.body
 const LOG_HEALTH_CHECK         = env('LOG_HEALTH_CHECK', false);
 const PROXY_TIMEOUT            = env('PROXY_TIMEOUT', 0); // upstream timeout, no timeout by default (note: if streaming, clients will slow down the response)
 const CLIENT_TIMEOUT           = env('TIMEOUT', 0); // client timeout for the entire lifecycle (request + response), no timeout by default
@@ -86,7 +86,7 @@ if(onRequest) {
   });
 }
 
-if(onResponse && PARSE_RESPONSE_BODY) {
+if(onRequest && PARSE_REQUEST_BODY) {
   app.use(express.json({ strict: true })); // Parse JSON body
   app.use(express.urlencoded({ extended: true })); // Parse URL-encoded body
 }
@@ -109,6 +109,13 @@ app.use('/', createProxyMiddleware({
       req.startTime = Date.now();
       // Disable upstream compression to ensure accurate content-length
       proxyReq.setHeader('Accept-Encoding', 'identity');
+
+      // If we have consumed the request stream, we need to set the content-length header and send the body ourselves.
+      // This is also useful and required when we have modified the request body in onRequest.
+      if(req.rawBody) {
+        proxyReq.setHeader('Content-Length', req.rawBody.length);
+        proxyReq.end(req.rawBody);
+      }
     },
 
     proxyRes: (proxyRes, req, res) => {
@@ -156,24 +163,30 @@ app.use('/', createProxyMiddleware({
       req.log.debug(`Buffering response for ${req.method} ${req.url} (${contentType}, ${contentLength} bytes)`);
       res.setHeader('X-Http-Proxy-Mode', 'buffer');
       let buffer = Buffer.from([]);
+      let switchedToStreaming = false;
 
-      proxyRes.on('data', chunk => {
+      const onData = (chunk) => {
+        if(switchedToStreaming) return;
         buffer = Buffer.concat([buffer, chunk]);
 
         // Do we get problems with chunked transfer here? can we skip if the content-length is set? or chunked?
         // buffer full at that time anyway? memory leak issue?
         req.log.debug(`Received ${chunk.length} bytes, total buffer size: ${buffer.length} bytes`);
         if(buffer.length > MAX_BUFFER_SIZE) {
+          switchedToStreaming = true;
           req.log.warn(`Response exceeded ${MAX_BUFFER_SIZE} bytes, switching to streaming. onResponse() won't be called.`);
           copyHeaders(proxyRes, res, true);
-          res.write(buffer);
-          proxyRes.pipe(res); // Add .on('error') here to handle any errors during streaming
-          proxyRes.removeAllListeners('data');
-          proxyRes.removeAllListeners('end');
+          res.write(buffer); // Write the buffered data so far to the response before switching to streaming
+          // Remove current listeners to avoid double-handling
+          proxyRes.removeListener('data', onData);
+          proxyRes.removeListener('end', onEnd);
+          // Pipe the rest of the response directly to the client
+          pipe(proxyRes, res, 'buffer-stream'); // Stream the rest of the response
         }
-      });
+      };
 
-      proxyRes.on('end', async () => {
+      const onEnd = async () => {
+        if(switchedToStreaming) return;
         try {
           const payload = buffer.toString();
           const modifiedBody = await onResponse(req, res, payload, proxyRes);
@@ -183,7 +196,11 @@ app.use('/', createProxyMiddleware({
           req.log.error({ err }, 'Error in onResponse handler:');
           res.status(500).send('Internal Server Error');
         }
-      });
+      };
+
+      // Attach listeners to the proxy response
+      proxyRes.on('data', onData);
+      proxyRes.on('end', onEnd);
     },
 
     error: (err, req, res) => {
