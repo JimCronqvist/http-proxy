@@ -23,7 +23,7 @@ const logger = pino({
       singleLine: true,
     }
   }
-});
+}, isProduction ? undefined : pino.destination({ sync: true }));
 
 logger.info('http-proxy server starting...');
 
@@ -48,8 +48,8 @@ const BUFFERABLE_CONTENT_TYPES = [
 const ENABLE_PINO_AUTO_LOGGING = env('ENABLE_PINO_AUTO_LOGGING', false);
 const PARSE_REQUEST_BODY       = env('PARSE_REQUEST_BODY', false); // If true, the request body will be parsed and available in req.body
 const LOG_HEALTH_CHECK         = env('LOG_HEALTH_CHECK', false);
-const PROXY_TIMEOUT            = env('PROXY_TIMEOUT', 0); // upstream timeout, no timeout by default (note: if streaming, clients will slow down the response)
-const CLIENT_TIMEOUT           = env('TIMEOUT', 0); // client timeout for the entire lifecycle (request + response), no timeout by default
+const PROXY_TIMEOUT            = env('PROXY_TIMEOUT', 3600); // upstream timeout, no timeout by default (note: if streaming, clients will slow down the response)
+const CLIENT_TIMEOUT           = env('TIMEOUT', 3600); // client timeout for the entire lifecycle (request + response), no timeout by default
 
 const app = express();
 app.set('trust proxy', true); // Sets the 'req.ip' to the real client IP when behind a reverse proxy
@@ -77,6 +77,19 @@ app.use(pinoHttp({
   }
 }));
 
+if(onRequest && PARSE_REQUEST_BODY) {
+  // Parse JSON request body
+  app.use(express.json({
+    strict: true,
+    verify: (req, res, buf) => req.rawBody = buf, // Preserve the raw request body so the proxy can forward it upstream
+  }));
+  // Parse URL-encoded request body
+  app.use(express.urlencoded({
+    extended: true,
+    verify: (req, res, buf) => req.rawBody = buf, // Preserve the raw request body so the proxy can forward it upstream
+  }));
+}
+
 if(onRequest) {
   app.use(async (req, res, next) => {
     await onRequest(req, res);
@@ -86,16 +99,11 @@ if(onRequest) {
   });
 }
 
-if(onRequest && PARSE_REQUEST_BODY) {
-  app.use(express.json({ strict: true })); // Parse JSON body
-  app.use(express.urlencoded({ extended: true })); // Parse URL-encoded body
-}
-
 app.use('/', createProxyMiddleware({
   target: UPSTREAM,
   changeOrigin: true,
-  proxyTimeout: (PROXY_TIMEOUT ? PROXY_TIMEOUT*1000 : 3600*1000), // Use the PROXY_TIMEOUT env variable if set, default: 1 hour (effectively no timeout).
-  timeout: (CLIENT_TIMEOUT ? CLIENT_TIMEOUT*1000 : undefined), // Use the CLIENT_TIMEOUT env variable if set, default: no timeout.
+  proxyTimeout: (PROXY_TIMEOUT ? PROXY_TIMEOUT*1000 : undefined), // Use the PROXY_TIMEOUT env variable if set, default: 1 hour (effectively no timeout).
+  timeout: (CLIENT_TIMEOUT ? CLIENT_TIMEOUT*1000 : undefined), // Use the CLIENT_TIMEOUT env variable if set, default: 1 hour (effectively no timeout).
   preserveHeaderKeyCase: true,
   xfwd: true,
   //logger: console,
@@ -113,9 +121,11 @@ app.use('/', createProxyMiddleware({
       // If we have consumed the request stream, we need to set the content-length header and send the body ourselves.
       // This is also useful and required when we have modified the request body in onRequest.
       if(req.rawBody) {
+        req.log.debug(`Sending request body of ${req.rawBody.length} bytes to upstream`);
         proxyReq.setHeader('Content-Length', req.rawBody.length);
         proxyReq.end(req.rawBody);
       }
+      req.log.debug(`Proxying request to upstream: ${proxyReq.method} ${proxyReq.url}`);
     },
 
     proxyRes: (proxyRes, req, res) => {
@@ -123,6 +133,7 @@ app.use('/', createProxyMiddleware({
 
       // Helper for streaming the response to the client
       const pipe = (proxyRes, res, proxyMode) => {
+        res.log.debug(`Piping response to client (${proxyMode})`);
         pipeline(proxyRes, res, (err) => {
           const fullDuration = Date.now() - req.startTime;
           if(err) {

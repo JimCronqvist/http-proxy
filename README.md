@@ -20,19 +20,24 @@ services:
 ```
 
 ## Environment Variables
-| Variable                    | Description                                                   | Default | Required |
-|-----------------------------|---------------------------------------------------------------|---------|----------|
-| `UPSTREAM`                  | The upstream server url to proxy requests to                  | `3000`  | -        |
-| `PORT`                      | The port the proxy server is listening on                     | `8080`  | Yes      |
-| `ENABLE_TRACING`            | Enables OpenTelemetry tracing                                 | `false` | -        |
-| `HANDLER_FILE`              | The file to use as a request handler                          | log.mjs | -        |
-| `GRACEFUL_SHUTDOWN_TIMEOUT` | The timeout for graceful shutdown in seconds                  | `10`    | -        |
-| `ENABLE_PINO_AUTO_LOGGING`  | Enables automatic logging of requests and responses           | `false` | -        |
-| `PARSE_RESPONSE_BODY`       | Enables parsing of response bodies for the onResponse handler | `false` | -        |
-| `LOG_HEALTH_CHECK`          | Enables logging of health check requests                      | `false` | -        |
-| `LOG_LEVEL`                 | The log level for pino                                        | info    | -        |
+| Variable                    | Description                                                     | Default                               | Required |
+|----------------------------|-----------------------------------------------------------------|---------------------------------------|----------|
+| `UPSTREAM`                 | The upstream server URL to proxy requests to                    | `http://host.docker.internal:3000`    | -        |
+| `PORT`                     | The port the proxy server listens on                            | `8080`                                | -        |
+| `ENABLE_TRACING`           | Enables OpenTelemetry tracing                                   | `false`                               | -        |
+| `OTLP_GRPC_ENDPOINT`       | OTLP gRPC endpoint for trace export                             | `grpc://localhost:4317`               | -        |
+| `HANDLER_FILE`             | The file to use as a request/response handler                   | `log.mjs`                             | -        |
+| `GRACEFUL_SHUTDOWN_TIMEOUT`| Timeout for graceful shutdown in seconds                         | `10`                                   | -        |
+| `ENABLE_PINO_AUTO_LOGGING` | Enables automatic logging of requests and responses             | `false`                               | -        |
+| `PARSE_REQUEST_BODY`       | Parse incoming request bodies and expose them on `req.body`     | `false`                               | -        |
+| `BUFFER_SIZE_MB`           | Max response buffer size before switching to streaming           | `1`                                    | -        |
+| `PROXY_TIMEOUT`            | Upstream timeout in seconds (0/undefined means no timeout)      | `3600`                                | -        |
+| `TIMEOUT`                  | Client timeout for full lifecycle in seconds (0=disabled)       | `3600`                                | -        |
+| `LOG_HEALTH_CHECK`         | Log health check requests                                       | `false`                               | -        |
+| `LOG_LEVEL`                | Pino log level                                                  | `info`                                | -        |
+| `STRIP_COOKIE_DOMAIN`      | Strip `Domain` from `Set-Cookie` in responses (cookie bound to proxy host) | `true`                       | -        |
 
-The handlers can also have their own environment variables, please refer to the specific handler file for more information.
+The handlers can also have their own environment variables, please refer to the specific handler file for more information (e.g. `handlers/log.mjs` has `LOG_REQUEST`, `LOG_RESPONSE`, `LOG_REQUEST_BODY`, `LOG_RESPONSE_BODY`, `LOG_IP`).
 
 ## Handlers
 
@@ -61,7 +66,7 @@ export function onResponse(req, res, payload, proxyRes) {
 }
 ```
 
-### OpenTelemetry
+## OpenTelemetry
 
 If you want to use tracing, you can change the command like this:
 
@@ -74,3 +79,26 @@ or use the `ENABLE_TRACING` environment variable:
     environment:
       - ENABLE_TRACING=true
 ```
+
+## Response buffering vs streaming
+
+- **Passthrough (no handler)**: If no `onResponse` is provided, responses are streamed directly to the client. Header `X-Http-Proxy-Mode: passthrough`.
+
+- **With `onResponse`**:
+  - The proxy decides to buffer or stream based on content type and size.
+  - Buffering is attempted only for these content types: `application/json`, `application/xml`, `application/x-www-form-urlencoded`, `text/html`, `text/plain`, `text/xml`.
+  - If the response has a known `content-length` less than or equal to `BUFFER_SIZE_MB` (in bytes), it is buffered; otherwise it streams.
+  - If `content-length` is unknown, the proxy will start buffering and will automatically switch to streaming if the in-memory buffer exceeds `BUFFER_SIZE_MB`.
+  - When streaming, `onResponse` is not called. When buffering completes, `onResponse(req, res, payload, proxyRes)` receives the buffered text payload.
+  - Header `X-Http-Proxy-Mode` is set to `buffer` or `stream` accordingly.
+
+- **Error handling**:
+  - While streaming, any pipe errors return `502 Bad Gateway` if the response hasn’t been sent yet.
+  - While buffering, errors inside `onResponse` return `500 Internal Server Error`.
+  - Proxy transport errors are surfaced as `500 Internal Server Error` with a log entry.
+
+## Cookie rewriting
+
+By default (`STRIP_COOKIE_DOMAIN=true`), the proxy removes the `Domain` attribute from `Set-Cookie` headers in upstream responses. This causes the browser to scope cookies to the proxy’s host, which avoids cross-domain cookie issues when proxying.
+
+- Set `STRIP_COOKIE_DOMAIN=false` to preserve the upstream `Domain` exactly as sent (useful when you intentionally need cross-domain/subdomain scoping).

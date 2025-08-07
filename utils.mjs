@@ -8,16 +8,25 @@ export function copyHeaders(originalResponse, response, bufferedResponseBody = f
 
   // If we buffer - ignore chunked and compression headers
   if(bufferedResponseBody) {
-    headerKeys = headerKeys.filter((key) => !['content-encoding', 'transfer-encoding'].includes(key));
+    headerKeys = headerKeys.filter((key) => !['content-encoding', 'transfer-encoding', 'content-length'].includes(key));
   }
 
   // Set the headers on the response, and some minor modifications
   headerKeys.forEach((key) => {
     let value = originalResponse.headers[key];
     if(key === 'set-cookie') {
-      // Remove cookie domain
-      value = Array.isArray(value) ? value : [value];
-      value = value.map((x) => x.replace(/Domain=[^;]+?/i, ''));
+      // Optionally remove cookie Domain attribute to avoid cross-domain issues
+      const stripCookieDomain = env('STRIP_COOKIE_DOMAIN', true);
+      if (stripCookieDomain) {
+        value = Array.isArray(value) ? value : [value];
+        value = value.map((x) =>
+          x
+            // remove '; Domain=...'
+            .replace(/;\s*Domain=[^;]+/i, '')
+            // remove leading 'Domain=...;'
+            .replace(/^Domain=[^;]+;?\s*/i, '')
+        );
+      }
     }
     response.setHeader(key, value);
   });
@@ -26,8 +35,14 @@ export function copyHeaders(originalResponse, response, bufferedResponseBody = f
 export const timestamp = () => new Date().toISOString().split('.')[0] + 'Z';
 
 export const realClientIP = (req) => {
-  const rawIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.connection.remoteAddress;
-  return rawIp.startsWith('::ffff:') ? rawIp.replace('::ffff:', '') : rawIp;
+  const raw =
+    req.headers['x-forwarded-for']?.split(',')[0].trim() ||
+    req.socket?.remoteAddress ||
+    req.connection?.remoteAddress ||
+    req.ip ||
+    '';
+  if(raw === '::1') return '127.0.0.1';
+  return raw.startsWith('::ffff:') ? raw.slice(7) : raw;
 };
 
 export function env(key, defaultValue = null) {

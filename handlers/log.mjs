@@ -11,7 +11,7 @@ const LOG_IP = env('LOG_IP', true);
 export const onRequest = !LOG_REQUEST ? undefined : async (req, res) => {
   const ip = LOG_IP ? ` [${realClientIP(req)}]` : '';
   req.log.info(`Request:  ${req.method} ${req.url}${ip}`);
-
+  
   if(!LOG_REQUEST_BODY) return;
 
   if(req.is('application/json') || req.is('application/x-www-form-urlencoded')) {
@@ -29,8 +29,14 @@ export const onResponse = !LOG_RESPONSE ? undefined : async (req, res, payload, 
 
   const contentType = (proxyRes.headers['content-type'] || '').split(';')[0].trim();
   if(contentType === 'application/json') {
-    const data = JSON.parse(payload);
-    req.log.info("Response body:\n"+JSON.stringify(data, null, 2));
-    return JSON.stringify(data);
+    try {
+      const data = JSON.parse(payload);
+      req.log.info("Response body:\n"+JSON.stringify(data, null, 2));
+      return JSON.stringify(data);
+    } catch(err) {
+      req.log.warn({ err }, 'Failed to parse JSON response payload; returning raw payload');
+      req.log.info("Response body:\n"+payload);
+      return payload;
+    }
   }
 };

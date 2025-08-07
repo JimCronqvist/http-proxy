@@ -26,5 +26,5 @@ services:
       PARSE_REQUEST_BODY: true
 
       LOG_REQUEST: true
-      LOG_REQUEST_BODY: true
-      LOG_RESPONSE_BODY: true
+      LOG_REQUEST_BODY: false
+      LOG_RESPONSE_BODY: false
