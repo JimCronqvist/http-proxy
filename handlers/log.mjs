@@ -1,4 +1,4 @@
-import { env, timestamp, realClientIP } from '../utils.mjs';
+import { env, realClientIP } from '../utils.mjs';
 
 // Environment variables
 const LOG_RESPONSE = env('LOG_RESPONSE', true);
@@ -9,27 +9,27 @@ const LOG_IP = env('LOG_IP', true);
 
 export const onRequest = !LOG_REQUEST ? undefined : async (req, res) => {
   const ip = LOG_IP ? ` [${realClientIP(req)}]` : '';
-  console.log(`${timestamp()} - Request:  ${req.method} ${req.url}${ip}`);
+  req.log.info(`Request:  ${req.method} ${req.url}${ip}`);
 
   if(!LOG_REQUEST_BODY) return;
 
   if(req.is('application/json') || req.is('application/x-www-form-urlencoded')) {
-    console.log(`${timestamp()} - Request body:\n`+JSON.stringify(req.body, null, 2));
+    req.log.info(`Request body:\n`+JSON.stringify(req.body, null, 2));
   } else if(req.is('text/plain')) {
-    console.log(`${timestamp()} - Request body:\n`+req.body);
+    req.log.info(`Request body:\n`+req.body);
   }
 };
 
 export const onResponse = !LOG_RESPONSE ? undefined : async (req, res, payload, proxyRes) => {
   const ip = LOG_IP ? ` [${realClientIP(req)}]` : '';
-  console.log(`${timestamp()} - Response: ${req.method} ${req.url} (${proxyRes.statusCode}) ${res.duration}ms${ip}`);
+  req.log.info(`Response: ${req.method} ${req.url} (${proxyRes.statusCode}) [${res.getHeader('X-Http-Proxy-Mode') || 'unknown'}] ${res.duration}ms${ip}`);
 
   if(!LOG_RESPONSE_BODY) return;
 
   const contentType = (proxyRes.headers['content-type'] || '').split(';')[0].trim();
   if(contentType === 'application/json') {
     const data = JSON.parse(payload);
-    console.log("Response body:\n"+JSON.stringify(data, null, 2));
+    req.log.info("Response body:\n"+JSON.stringify(data, null, 2));
     return JSON.stringify(data);
   }
 };

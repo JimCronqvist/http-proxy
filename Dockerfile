@@ -1,5 +1,7 @@
 FROM node:22-alpine
 
+ENV NODE_ENV production
+
 WORKDIR /app
 
 #RUN corepack enable && yarn set version stable && yarn config set nodeLinker node-modules

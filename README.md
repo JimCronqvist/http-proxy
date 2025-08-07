@@ -20,17 +20,17 @@ services:
 ```
 
 ## Environment Variables
-| Variable                    | Description                                                    | Default | Required |
-|-----------------------------|----------------------------------------------------------------|---------|----------|
-| `UPSTREAM`                  | The upstream server url to proxy requests to                   | `3000`  | -        |
-| `PORT`                      | The port the proxy server is listening on                      | `8080`  | Yes      |
-| `ENABLE_TRACING`            | Enables OpenTelemetry tracing                                  | `false` | -        |
-| `HANDLER_FILE`              | The file to use as a request handler                           | log.mjs | -        |
-| `GRACEFUL_SHUTDOWN_TIMEOUT` | The timeout for graceful shutdown in seconds                   | `10`    | -        |
-| `ENABLE_PINO`               | Adds Pino logging to Express                                   | `false` | -        |
-| `ENABLE_PINO_AUTO_LOGGING`  | Enables automatic logging of requests and responses            | `true`  | -        |
-| `PARSE_RESPONSE_BODY`       | Enables parsing of response bodies for the onResponse handler  | `false` | -        |
-| `LOG_HEALTH_CHECK`          | Enables logging of health check requests                       | `false` | -        |
+| Variable                    | Description                                                   | Default | Required |
+|-----------------------------|---------------------------------------------------------------|---------|----------|
+| `UPSTREAM`                  | The upstream server url to proxy requests to                  | `3000`  | -        |
+| `PORT`                      | The port the proxy server is listening on                     | `8080`  | Yes      |
+| `ENABLE_TRACING`            | Enables OpenTelemetry tracing                                 | `false` | -        |
+| `HANDLER_FILE`              | The file to use as a request handler                          | log.mjs | -        |
+| `GRACEFUL_SHUTDOWN_TIMEOUT` | The timeout for graceful shutdown in seconds                  | `10`    | -        |
+| `ENABLE_PINO_AUTO_LOGGING`  | Enables automatic logging of requests and responses           | `false` | -        |
+| `PARSE_RESPONSE_BODY`       | Enables parsing of response bodies for the onResponse handler | `false` | -        |
+| `LOG_HEALTH_CHECK`          | Enables logging of health check requests                      | `false` | -        |
+| `LOG_LEVEL`                 | The log level for pino                                        | info    | -        |
 
 The handlers can also have their own environment variables, please refer to the specific handler file for more information.
 

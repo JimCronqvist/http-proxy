@@ -10,14 +10,16 @@ services:
       - ./:/app
     init: true
     #command: node --trace-deprecation app.mjs
-    #command: sh -c "yarn install && yarn nodemon --signal SIGTERM --watch . --ext mjs,js,json,lock --exec 'node --trace-deprecation app.mjs'"
-    command: sh -c "yarn install && yarn nodemon --signal SIGTERM --watch . --ext mjs,js,json,lock --exec 'node --import ./tracing.mjs --trace-deprecation app.mjs'"
+    command: sh -c "yarn install && yarn nodemon --watch . --ext mjs,js,json,lock --exec 'node --trace-deprecation app.mjs'"
+    #command: sh -c "yarn install && yarn nodemon --watch . --ext mjs,js,json,lock --exec 'node --import ./tracing.mjs --trace-deprecation app.mjs'"
     restart: unless-stopped
     environment:
-      UPSTREAM: https://www.sweclockers.com
-      HANDLER_FILE: log.mjs
+      LOG_LEVEL: debug
+      NODE_ENV: development
+      UPSTREAM: https://img-test2.diakrit.com
+      HANDLER_FILE: testNoOnResponse.mjs
+      #HANDLER_FILE: log.mjs
 
-      ENABLE_PINO: false
-      ENABLE_PINO_AUTO_LOGGING: true
+      ENABLE_PINO_AUTO_LOGGING: false
 
       LOG_REQUEST: false

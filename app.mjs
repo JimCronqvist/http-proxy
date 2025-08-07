@@ -2,18 +2,36 @@ if (process.env.ENABLE_TRACING === 'true') {
   await import('./tracing.mjs');
 }
 
+import { pipeline } from 'stream';
 import express from 'express';
 import pinoHttp from 'pino-http';
+import pino from 'pino';
+import pretty from 'pino-pretty';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { copyHeaders, env } from './utils.mjs';
+const isProduction = env('NODE_ENV', 'production') === 'production';
 
-console.log('http-proxy server starting...');
+const logger = pino({
+  level: env('LOG_LEVEL', 'info'),
+  transport: env('NODE_ENV', 'production') === 'production' ? undefined : {
+    target: 'pino-pretty',
+    options: {
+      colorize: true, // pretty.isColorSupported || !isProduction
+      translateTime: 'yyyy-mm-dd HH:MM:ss.l o',
+      //messageFormat: '[{time}] {levelLabel}: {msg}',
+      ignore: 'pid,hostname',
+      singleLine: true,
+    }
+  }
+});
+
+logger.info('http-proxy server starting...');
 
 let handlerFile = process.env.HANDLER_FILE || 'log.mjs';
 if(!handlerFile.includes('/')) {
   handlerFile = `./handlers/${handlerFile}`;
 }
-console.debug('http-proxy using handler file:', handlerFile);
+logger.info('http-proxy using handler file:', handlerFile);
 const { onRequest, onResponse } = await import(handlerFile);
 
 const UPSTREAM = process.env.UPSTREAM || 'http://host.docker.internal:3000';
@@ -27,12 +45,11 @@ const BUFFERABLE_CONTENT_TYPES = [
   'text/xml',
 ];
 
-const ENABLE_PINO              = env('ENABLE_PINO', false);
-const ENABLE_PINO_AUTO_LOGGING = env('ENABLE_PINO_AUTO_LOGGING', true);
+const ENABLE_PINO_AUTO_LOGGING = env('ENABLE_PINO_AUTO_LOGGING', false);
 const PARSE_RESPONSE_BODY      = env('PARSE_RESPONSE_BODY', true);
 const LOG_HEALTH_CHECK         = env('LOG_HEALTH_CHECK', false);
 const PROXY_TIMEOUT            = env('PROXY_TIMEOUT', 0); // upstream timeout, no timeout by default (note: if streaming, clients will slow down the response)
-const CLIENT_TIMEOUT           = env('TIMEOUT', 0); // client timeout, no timeout by default
+const CLIENT_TIMEOUT           = env('TIMEOUT', 0); // client timeout for the entire lifecycle (request + response), no timeout by default
 
 const app = express();
 app.set('trust proxy', true); // Sets the 'req.ip' to the real client IP when behind a reverse proxy
@@ -40,23 +57,32 @@ app.set('trust proxy', true); // Sets the 'req.ip' to the real client IP when be
 // Health check endpoint
 app.get('/health', (req, res) => {
   if(LOG_HEALTH_CHECK) {
-    console.debug('http-proxy GET /health');
+    logger.debug('http-proxy GET /health');
   }
   res.status(200).end('OK');
 });
 
-if(ENABLE_PINO) {
-  const logger = pinoHttp({
-    autoLogging: ENABLE_PINO_AUTO_LOGGING,
-    redact: ['req.headers.authorization', 'req.headers.cookie'],
-  });
-  app.use(logger);
-}
+app.use(pinoHttp({
+  logger: logger,
+  quietReqLogger: true,
+  quietResLogger: true,
+  autoLogging: ENABLE_PINO_AUTO_LOGGING,
+  redact: {
+    paths: [
+      'req.headers.authorization',
+      'req.headers.cookie',
+      //'reqId',
+    ],
+    remove: !isProduction,
+  }
+}));
 
 if(onRequest) {
   app.use(async (req, res, next) => {
     await onRequest(req, res);
-    next();
+    if(!res.headersSent && !res.writableEnded) {
+      next();
+    }
   });
 }
 
@@ -68,12 +94,15 @@ if(onResponse && PARSE_RESPONSE_BODY) {
 app.use('/', createProxyMiddleware({
   target: UPSTREAM,
   changeOrigin: true,
-  proxyTimeout: (PROXY_TIMEOUT ? PROXY_TIMEOUT*1000 : undefined), // Use the PROXY_TIMEOUT env variable if set, default: no timeout.
+  proxyTimeout: (PROXY_TIMEOUT ? PROXY_TIMEOUT*1000 : 3600*1000), // Use the PROXY_TIMEOUT env variable if set, default: 1 hour (effectively no timeout).
   timeout: (CLIENT_TIMEOUT ? CLIENT_TIMEOUT*1000 : undefined), // Use the CLIENT_TIMEOUT env variable if set, default: no timeout.
   preserveHeaderKeyCase: true,
   xfwd: true,
   //logger: console,
-  selfHandleResponse: Boolean(onResponse),
+  pathFilter: [
+    '!/.well-known/appspecific/com.chrome.devtools.json', // Exclude Chrome DevTools path
+  ],
+  selfHandleResponse: true, // We handle the response ourselves in the proxyRes event.
 
   on: {
     proxyReq: (proxyReq, req) => {
@@ -83,67 +112,86 @@ app.use('/', createProxyMiddleware({
     },
 
     proxyRes: (proxyRes, req, res) => {
-      res.duration = Date.now() - req.startTime;
+      res.duration = Date.now() - req.startTime; // ttfb for the proxy request's response.
 
-      if (!onResponse) {
-        copyHeaders(proxyRes, res, false);
+      // Helper for streaming the response to the client
+      const pipe = (proxyRes, res, proxyMode) => {
+        pipeline(proxyRes, res, (err) => {
+          const fullDuration = Date.now() - req.startTime;
+          if(err) {
+            res.log.error({ err }, `Error piping response (${proxyMode})`);
+            if(!res.headersSent) {
+              res.status(502).send('Bad Gateway');
+            }
+          } else {
+            res.log.debug(`Piped response for ${req.method} ${req.url} (${proxyRes.statusCode}) in ${fullDuration}ms`);
+          }
+        });
+      };
+
+      // If we don't have an onResponse handler, we can just pass through the response
+      if(!onResponse) {
+        copyHeaders(proxyRes, res);
         res.setHeader('X-Http-Proxy-Mode', 'passthrough');
-        proxyRes.pipe(res);
+        pipe(proxyRes, res, 'passthrough');
         return;
       }
 
+      // If we have an onResponse handler, we need to check if we should buffer the response
       const contentType = (proxyRes.headers['content-type'] || 'text/html').split(';')[0].trim();
       const contentLength = parseInt(proxyRes.headers['content-length'], 10) || 0;
-      //console.log('Content-Type:', contentType, contentLength);
+      const shouldBuffer = BUFFERABLE_CONTENT_TYPES.includes(contentType) && (!isNaN(contentLength) && contentLength <= MAX_BUFFER_SIZE);
 
-      const shouldBuffer =
-        BUFFERABLE_CONTENT_TYPES.includes(contentType) &&
-        (!isNaN(contentLength) && contentLength <= MAX_BUFFER_SIZE);
-
-      if(shouldBuffer) {
-        res.setHeader('X-Http-Proxy-Mode', 'buffer');
-
-        let buffer = Buffer.from([]);
-
-        proxyRes.on('data', chunk => {
-          buffer = Buffer.concat([buffer, chunk]);
-
-          // Do we get problems with chunked transfer here? can we skip if the content-length is set? or chunked?
-          // buffer full at that time anyway? memory leak issue?
-          if(buffer.length > MAX_BUFFER_SIZE) {
-            console.warn(`Response exceeded ${MAX_BUFFER_SIZE} bytes, switching to streaming. onResponse() won't be called.`);
-            copyHeaders(proxyRes, res, true);
-            res.write(buffer);
-            proxyRes.pipe(res);
-            proxyRes.removeAllListeners('data');
-            proxyRes.removeAllListeners('end');
-          }
-        });
-
-        proxyRes.on('end', async () => {
-          try {
-            const payload = buffer.toString();
-            const modifiedBody = await onResponse(req, res, payload, proxyRes);
-            copyHeaders(proxyRes, res, true);
-            res.send(modifiedBody || buffer);
-          } catch(err) {
-            console.error('Error in onResponse:', err);
-            res.status(500).send('Internal Server Error');
-          }
-        });
-      } else {
+      // If we should NOT buffer the response, we can stream it directly
+      if(!shouldBuffer) {
+        // If we are not buffering, we can stream the response directly
+        req.log.debug('Should not buffer, streaming response for', req.method, req.url, `(${contentType}, ${contentLength} bytes)`);
         res.setHeader('X-Http-Proxy-Mode', 'stream');
         copyHeaders(proxyRes, res);
-        proxyRes.pipe(res);
+        pipe(proxyRes, res, 'stream');
+        return;
       }
+
+      // We should buffer the response
+      req.log.debug(`Buffering response for ${req.method} ${req.url} (${contentType}, ${contentLength} bytes)`);
+      res.setHeader('X-Http-Proxy-Mode', 'buffer');
+      let buffer = Buffer.from([]);
+
+      proxyRes.on('data', chunk => {
+        buffer = Buffer.concat([buffer, chunk]);
+
+        // Do we get problems with chunked transfer here? can we skip if the content-length is set? or chunked?
+        // buffer full at that time anyway? memory leak issue?
+        req.log.debug(`Received ${chunk.length} bytes, total buffer size: ${buffer.length} bytes`);
+        if(buffer.length > MAX_BUFFER_SIZE) {
+          req.log.warn(`Response exceeded ${MAX_BUFFER_SIZE} bytes, switching to streaming. onResponse() won't be called.`);
+          copyHeaders(proxyRes, res, true);
+          res.write(buffer);
+          proxyRes.pipe(res); // Add .on('error') here to handle any errors during streaming
+          proxyRes.removeAllListeners('data');
+          proxyRes.removeAllListeners('end');
+        }
+      });
+
+      proxyRes.on('end', async () => {
+        try {
+          const payload = buffer.toString();
+          const modifiedBody = await onResponse(req, res, payload, proxyRes);
+          copyHeaders(proxyRes, res, true);
+          res.send(modifiedBody || buffer);
+        } catch(err) {
+          req.log.error({ err }, 'Error in onResponse handler:');
+          res.status(500).send('Internal Server Error');
+        }
+      });
     },
 
     error: (err, req, res) => {
-      console.error('Proxy error:', err);
-      if (res.headersSent) {
-        res.end('Internal Server Error');
+      logger.error({ err }, 'Proxy error');
+      if(res.headersSent) {
+        res.end('Internal Server Error. Reason: ' + (err.message || 'Unknown error'));
       } else {
-        res.status(500).send('Internal Server Error');
+        res.status(500).send('Internal Server Error. Reason: ' + (err.message || 'Unknown error'));
       }
     },
   },
@@ -151,48 +199,44 @@ app.use('/', createProxyMiddleware({
 
 // Global Express error handler
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
+  logger.error({ err }, 'Unhandled error');
   res.status(500).send('Internal Server Error');
 });
 
 // Start server
 const port = process.env.PORT || 8080;
 const server = app.listen(port, () => {
-  console.log(`http-proxy listening on port ${port}. Proxy upstream: '${UPSTREAM}'`);
-});
-
-app.on('error', (err) => {
-  console.error('Express app error:', err);
+  logger.info(`http-proxy listening on port ${port}. Proxy upstream: '${UPSTREAM}'`);
 });
 
 server.on('error', (err) => {
-  console.error('HTTP Server error:', err);
+  logger.error({ err }, 'HTTP Server error');
 });
 
 // Graceful shutdown
 const gracefulShutdown = (signal) => {
-  console.log(`Received ${signal}. Shutting down server gracefully...`);
+  logger.info(`Received ${signal}. Shutting down server gracefully...`);
   server.close(() => {
-    console.log(`Server closed gracefully, due to ${signal}.`);
+    logger.info(`Server closed gracefully, due to ${signal}.`);
     process.exit(signal.startsWith('SIG') ? 0 : 1);
   });
   // Force shutdown after 10 seconds if not closed
   const GRACEFUL_SHUTDOWN_TIMEOUT = env('GRACEFUL_SHUTDOWN_TIMEOUT', 10);
   setTimeout(() => {
-    console.error(`Forcing shutdown after ${GRACEFUL_SHUTDOWN_TIMEOUT}s...`);
+    logger.error(`Forcing shutdown after ${GRACEFUL_SHUTDOWN_TIMEOUT}s...`);
     process.exit(1);
   }, GRACEFUL_SHUTDOWN_TIMEOUT*1000);
 };
 
 // Node process error handlers
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
+  logger.error({ err }, 'Uncaught Exception');
   gracefulShutdown('uncaughtException'); // Shutdown (exit) to prevent an unstable state
 });
 
 // Handle unhandled promise rejections (async errors outside Express)
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
   gracefulShutdown('unhandledRejection'); // Shutdown (exit) to prevent an unstable state
 });
 
