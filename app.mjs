@@ -62,6 +62,9 @@ app.get('/health', (req, res) => {
   res.status(200).end('OK');
 });
 
+// Chrome DevTools endpoint
+app.use('/.well-known/appspecific/com.chrome.devtools.json', (req, res) => res.status(200).end());
+
 app.use(pinoHttp({
   logger: logger,
   quietReqLogger: true,
@@ -125,7 +128,7 @@ app.use('/', createProxyMiddleware({
         proxyReq.setHeader('Content-Length', req.rawBody.length);
         proxyReq.end(req.rawBody);
       }
-      req.log.debug(`Proxying request to upstream: ${proxyReq.method} ${new URL(req.url, UPSTREAM).href}`);
+      req.log.debug(`Proxying request to upstream: ${proxyReq.method} ${new URL(req.url, UPSTREAM).href} (Host: ${req.headers.host})`);
     },
 
     proxyRes: (proxyRes, req, res) => {
