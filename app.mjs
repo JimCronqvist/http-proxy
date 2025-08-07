@@ -125,7 +125,7 @@ app.use('/', createProxyMiddleware({
         proxyReq.setHeader('Content-Length', req.rawBody.length);
         proxyReq.end(req.rawBody);
       }
-      req.log.debug(`Proxying request to upstream: ${proxyReq.method} ${proxyReq.url}`);
+      req.log.debug(`Proxying request to upstream: ${proxyReq.method} ${new URL(req.url, UPSTREAM).href}`);
     },
 
     proxyRes: (proxyRes, req, res) => {
