@@ -31,6 +31,7 @@ export const onRequest = async (req, res) => {
   const typeParam = params.get('type'); // 'crop'
   const qualityParam = params.get('quality');
   const formatParam = params.get('format');
+  const presetParam = params.get('preset');
 
   // Map params to imgproxy options
   const options = [];
@@ -40,9 +41,10 @@ export const onRequest = async (req, res) => {
   if(heightParam)  options.push(`height:${Number(heightParam)}`);
   if(qualityParam) options.push(`quality:${Number(qualityParam)}`);
   if(formatParam)  options.push(`format:${formatParam}`);
-
+  if(presetParam)  options.push(`preset:${presetParam}`);
+  
   // Remove consumed params
-  ['width', 'height', 'type', 'quality', 'format'].forEach((k) => params.delete(k));
+  ['width', 'height', 'type', 'quality', 'format', 'preset'].forEach((k) => params.delete(k));
 
   // Build source path mapping (virtual host as bucket name derived from hostname)
   let virtualHost = '';
