@@ -1,4 +1,5 @@
 import { env, realClientIP } from '../utils.mjs';
+import { runMiddleware, blockHiddenPaths, filterExtensions } from '../middleware/index.js';
 
 // Rewrites laravel-api image on-the-fly resizing query params to imgproxy path options and prefixes
 // Example:
@@ -9,9 +10,19 @@ import { env, realClientIP } from '../utils.mjs';
 const ENABLE_VIRTUAL_HOST_SOURCE_PREFIX = env('ENABLE_VIRTUAL_HOST_SOURCE_PREFIX', true);
 const UPSTREAM = env('UPSTREAM');
 
+const blockHiddenPathsMiddleware = blockHiddenPaths();
+const filterExtensionsMiddleware = filterExtensions({
+  mode: 'allow',
+  extensions: ['jpg','jpeg','png','webp','avif','gif','tiff','bmp','svg','ico']
+});
+
 export const onRequest = async (req, res) => {
   // Only handle GET-like fetches to images
   if(req.method !== 'GET' && req.method !== 'HEAD') return;
+
+  // Run a few express middlewares for filtering
+  if(await runMiddleware(req, res, blockHiddenPathsMiddleware)) return;
+  if(await runMiddleware(req, res, filterExtensionsMiddleware)) return;
 
   // Parse URL
   const parsed = new URL(req.url, req.scheme + '://' + req.headers.host);
