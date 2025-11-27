@@ -55,10 +55,10 @@ export const onResponse = !LOG_RESPONSE ? undefined : async (req, res, payload, 
       msg = msg.slice('Response: '.length);
     }
     if(LOG_REQUEST_BODY && requestPayload) {
-      msg += `\nRequest body:\n${JSON.stringify(requestPayload, null, 2)}`;
+      msg += `\n\nRequest body:\n${JSON.stringify(requestPayload, null, 2)}`;
     }
     if(LOG_RESPONSE_BODY && responsePayload) {
-      msg += `\nResponse body:\n${JSON.stringify(responsePayload, null, 2)}`;
+      msg += `\n\nResponse body:\n${JSON.stringify(responsePayload, null, 2)}`;
     }
     req.log.info({ res }, msg);
   }
