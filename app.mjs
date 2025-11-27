@@ -6,20 +6,28 @@ import { pipeline } from 'stream';
 import express from 'express';
 import pinoHttp from 'pino-http';
 import pino from 'pino';
-//import pretty from 'pino-pretty';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { copyHeaders, env } from './utils.mjs';
 const isProduction = env('NODE_ENV', 'production') === 'production';
 
 const logger = pino({
   level: env('LOG_LEVEL', 'info'),
+  formatters: {
+    bindings: (bindings) => {
+      return { pid: bindings.pid, host: bindings.hostname };
+    },
+    level: (label) => {
+      return { level: label.toUpperCase() };
+    },
+  },
+  timestamp: pino.stdTimeFunctions.isoTime,
   transport: env('NODE_ENV', 'production') === 'production' ? undefined : {
     target: 'pino-pretty',
     options: {
       colorize: true, // pretty.isColorSupported || !isProduction
       translateTime: 'yyyy-mm-dd HH:MM:ss.l o',
       //messageFormat: '[{time}] {levelLabel}: {msg}',
-      ignore: 'pid,hostname',
+      ignore: 'pid,hostname,host',
       singleLine: true,
     }
   }
@@ -67,8 +75,8 @@ app.use('/.well-known/appspecific/com.chrome.devtools.json', (req, res) => res.s
 
 app.use(pinoHttp({
   logger: logger,
-  quietReqLogger: true,
-  quietResLogger: true,
+  quietReqLogger: !isProduction,
+  quietResLogger: !isProduction,
   autoLogging: ENABLE_PINO_AUTO_LOGGING,
   redact: {
     paths: [
@@ -77,7 +85,18 @@ app.use(pinoHttp({
       //'reqId',
     ],
     remove: !isProduction,
-  }
+  },
+  serializers: {
+    res: (res) => {
+      if(!isProduction) return undefined;
+
+      // Set statusCode to the actual value on the res object. Pino sets it as null until headers are flushed.
+      return {
+        ...res,
+        statusCode: res.raw && typeof res.raw.statusCode === 'number' ? res.raw.statusCode : res.statusCode,
+      };
+    },
+  },
 }));
 
 if(onRequest && PARSE_REQUEST_BODY) {
@@ -167,8 +186,8 @@ app.use('/', createProxyMiddleware({
       if(!shouldBuffer) {
         // If we are not buffering, we can stream the response directly
         req.log.debug('Should not buffer, streaming response for', req.method, req.url, `(${contentType}, ${contentLength} bytes)`);
-        res.setHeader('X-Http-Proxy-Mode', 'stream');
         copyHeaders(proxyRes, res);
+        res.setHeader('X-Http-Proxy-Mode', 'stream');
         pipe(proxyRes, res, 'stream');
         return;
       }
@@ -203,12 +222,28 @@ app.use('/', createProxyMiddleware({
         if(switchedToStreaming) return;
         try {
           const payload = buffer.toString();
-          const modifiedBody = await onResponse(req, res, payload, proxyRes);
           copyHeaders(proxyRes, res, true);
-          res.send(modifiedBody || buffer);
+          const modifiedBody = await onResponse(req, res, payload, proxyRes);
+
+          // If the handler already sent a response, we don't want to do anything further.
+          if(res.headersSent || res.writableEnded) {
+            req.log.debug('onResponse handler already sent the response, skipping proxy send');
+            return;
+          }
+
+          // If we have a modified body returned, we should remove the content-length and let Express calculate a new one
+          if(modifiedBody !== undefined) {
+            res.removeHeader('Content-Length');
+            res.removeHeader('Transfer-Encoding'); // Express will set if needed
+          }
+          res.send(modifiedBody ?? buffer);
         } catch(err) {
           req.log.error({ err }, 'Error in onResponse handler:');
-          res.status(500).send('Internal Server Error');
+          if(!res.headersSent) {
+            res.status(500).send('Internal Server Error');
+          } else {
+            res.end(); // Safety step, in case the handler sends headers but don't close the stream.
+          }
         }
       };
 
@@ -219,10 +254,10 @@ app.use('/', createProxyMiddleware({
 
     error: (err, req, res) => {
       logger.error({ err }, 'Proxy error');
-      if(res.headersSent) {
-        res.end('Internal Server Error. Reason: ' + (err.message || 'Unknown error'));
-      } else {
+      if(!res.headersSent) {
         res.status(500).send('Internal Server Error. Reason: ' + (err.message || 'Unknown error'));
+      } else {
+        res.end();
       }
     },
   },

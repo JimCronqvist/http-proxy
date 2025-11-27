@@ -23,7 +23,7 @@ export const onRequest = !LOG_REQUEST ? undefined : async (req, res) => {
 
 export const onResponse = !LOG_RESPONSE ? undefined : async (req, res, payload, proxyRes) => {
   const ip = LOG_IP ? ` [${realClientIP(req)}]` : '';
-  req.log.info(`Response: ${req.method} ${req.url} (${proxyRes.statusCode}) [${res.getHeader('X-Http-Proxy-Mode') || 'unknown'}] ${res.duration}ms${ip}`);
+  req.log.info({ res }, `Response: ${req.method} ${req.url} (${proxyRes.statusCode}) [${res.getHeader('X-Http-Proxy-Mode') || 'unknown'}] ${res.duration}ms${ip}`);
 
   if(!LOG_RESPONSE_BODY) return;
 
@@ -31,11 +31,11 @@ export const onResponse = !LOG_RESPONSE ? undefined : async (req, res, payload, 
   if(contentType === 'application/json') {
     try {
       const data = JSON.parse(payload);
-      req.log.info("Response body:\n"+JSON.stringify(data, null, 2));
+      req.log.info({ res }, "Response body:\n"+JSON.stringify(data, null, 2));
       return JSON.stringify(data);
     } catch(err) {
-      req.log.warn({ err }, 'Failed to parse JSON response payload; returning raw payload');
-      req.log.info("Response body:\n"+payload);
+      req.log.warn({ res, err }, 'Failed to parse JSON response payload; returning raw payload');
+      req.log.info({ res }, "Response body:\n"+payload);
       return payload;
     }
   }
